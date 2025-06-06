@@ -1,2 +1,4 @@
 plotly
 nbformat
+openpyxl
+pandas
