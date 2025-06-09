@@ -130,52 +130,57 @@ def process_and_display(df, config, filename):
     try:
         events, processed_df = detect_fuel_events(df, config)
         
-        if not events:
+        # Display table only if events are found, otherwise show an info message.
+        if events:
+            st.subheader("Detected Fuel Events")
+            events_df = pd.DataFrame(events)
+            st.dataframe(events_df)
+        else:
             st.info("No significant fuel events were detected with the current settings.")
-            return
-
-        events_df = pd.DataFrame(events)
-        st.subheader("Detected Fuel Events")
-        st.dataframe(events_df)
         
-        st.subheader("Fuel Level Chart")
-        fig = go.Figure()
+        # Always plot the chart if there is data to process.
+        if processed_df is not None and not processed_df.empty:
+            st.subheader("Fuel Level Chart")
+            fig = go.Figure()
 
-        fig.add_trace(go.Scatter(
-            x=processed_df['Dttime_ist'],
-            y=processed_df['fuel_level_liters'],
-            mode='lines', name='Fuel Level', line=dict(color='blue', width=2)
-        ))
-        
-        event_markers = {
-            "True Drain": {"color": "red", "symbol": "triangle-down"},
-            "False Drain": {"color": "orange", "symbol": "triangle-down-open"},
-            "True Filling": {"color": "green", "symbol": "triangle-up"},
-            "False Filling": {"color": "lightgreen", "symbol": "triangle-up-open"}
-        }
+            # Plot the main fuel level line
+            fig.add_trace(go.Scatter(
+                x=processed_df['Dttime_ist'],
+                y=processed_df['fuel_level_liters'],
+                mode='lines', name='Fuel Level', line=dict(color='blue', width=2)
+            ))
+            
+            # Add markers only if events were detected
+            if events:
+                event_markers = {
+                    "True Drain": {"color": "red", "symbol": "triangle-down"},
+                    "False Drain": {"color": "orange", "symbol": "triangle-down-open"},
+                    "True Filling": {"color": "green", "symbol": "triangle-up"},
+                    "False Filling": {"color": "lightgreen", "symbol": "triangle-up-open"}
+                }
 
-        for event_type, style in event_markers.items():
-            plot_df = events_df[events_df['Event'] == event_type]
-            if not plot_df.empty:
-                merged_df = pd.merge_asof(
-                    plot_df.sort_values('Timestamp'), 
-                    processed_df[['Dttime_ist', 'fuel_level_liters']].sort_values('Dttime_ist'),
-                    left_on='Timestamp', right_on='Dttime_ist', direction='nearest'
-                )
-                fig.add_trace(go.Scatter(
-                    x=merged_df['Timestamp'], y=merged_df['fuel_level_liters'],
-                    mode='markers', name=event_type,
-                    marker=dict(color=style['color'], size=12, symbol=style['symbol'], line=dict(width=2, color='DarkSlateGrey')),
-                    hoverinfo='text',
-                    text=[f"{row['Event']}<br>{row['Volume (L)']} L" for _, row in merged_df.iterrows()]
-                ))
+                for event_type, style in event_markers.items():
+                    plot_df = events_df[events_df['Event'] == event_type]
+                    if not plot_df.empty:
+                        merged_df = pd.merge_asof(
+                            plot_df.sort_values('Timestamp'), 
+                            processed_df[['Dttime_ist', 'fuel_level_liters']].sort_values('Dttime_ist'),
+                            left_on='Timestamp', right_on='Dttime_ist', direction='nearest'
+                        )
+                        fig.add_trace(go.Scatter(
+                            x=merged_df['Timestamp'], y=merged_df['fuel_level_liters'],
+                            mode='markers', name=event_type,
+                            marker=dict(color=style['color'], size=12, symbol=style['symbol'], line=dict(width=2, color='DarkSlateGrey')),
+                            hoverinfo='text',
+                            text=[f"{row['Event']}<br>{row['Volume (L)']} L" for _, row in merged_df.iterrows()]
+                        ))
 
-        fig.update_layout(
-            title=f"Fuel Analysis for IMEI: {df['Imei'].iloc[0]}",
-            xaxis_title="Date and Time", yaxis_title="Fuel Level (Liters)",
-            legend_title="Events", hovermode="x unified"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                title=f"Fuel Analysis for IMEI: {df['Imei'].iloc[0]}",
+                xaxis_title="Date and Time", yaxis_title="Fuel Level (Liters)",
+                legend_title="Events", hovermode="x unified"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
         st.error(f"An error occurred while processing {filename}: {e}")
