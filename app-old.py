@@ -109,7 +109,8 @@ def apply_median_filter(df, config):
 def apply_adaptive_median_filter(df, config):
     """
     Applies a true adaptive median filter by dynamically adjusting its window size
-    for each data point to remove noise while preserving signal features.
+    for each data point. This advanced method removes noise while preserving the
+    sharp edges of genuine events like drains and fillings.
 
     Args:
         df (pd.DataFrame): The DataFrame with the 'fuel_level_liters' column.
@@ -124,42 +125,56 @@ def apply_adaptive_median_filter(df, config):
     
     st.write(f"Applying True Adaptive Median Filter with min/max windows: {min_window}/{max_window}")
 
+    # Ensure window sizes are odd
     if min_window % 2 == 0: min_window += 1
     if max_window % 2 == 0: max_window += 1
     
+    # Convert data to a NumPy array for efficient processing
     data = df[column_name].to_numpy()
+    
+    # Pad the data at the edges to allow the window to operate on the first and last points
     pad_size = max_window // 2
     padded_data = np.pad(data, (pad_size, pad_size), mode='reflect')
+    
+    # Create a copy to store the final filtered data
     filtered_data = np.copy(data)
 
+    # --- Core Adaptive Filtering Logic ---
+    # Iterate through each original data point
     for i in range(len(data)):
         center_index = i + pad_size
         current_window_size = min_window
+        
+        # Start with the smallest window and expand if necessary
         while current_window_size <= max_window:
             half_window = current_window_size // 2
             window = padded_data[center_index - half_window : center_index + half_window + 1]
+            
             z_min, z_max, z_med = np.min(window), np.max(window), np.median(window)
             
-            # STAGE A: Check if the median is an outlier itself
+            # STAGE A: Check if the median itself is a reasonable value (not an outlier)
             if z_min < z_med < z_max:
-                # STAGE B: Median is good, now check the original center point
+                # STAGE B: The median is good. Now check if the original data point is an outlier.
                 center_point_value = padded_data[center_index]
                 if not (z_min < center_point_value < z_max):
-                    # Center point is the outlier, replace it with the window's median
+                    # The original point is an outlier (a spike), so replace it with the window's median.
                     filtered_data[i] = z_med
-                # If center point is not an outlier, it keeps its original value from the copy
-                break  # Exit while loop, point is processed
+                # If the original point is NOT an outlier, we keep its value to preserve sharp edges.
+                break  # Exit the 'while' loop and move to the next data point
             else:
-                # Median is an outlier (e.g., z_min or z_max), so expand the window and retry
+                # The median is an outlier (z_min or z_max). This often happens at the start of a
+                # real drain/fill. We expand the window to get a better-stabilized median.
                 current_window_size += 2
                 if current_window_size > max_window:
-                    # Max window reached, unable to find a non-outlier median.
-                    # As a last resort, keep the median of the largest window.
+                    # If we reach the max window and the median is still an outlier,
+                    # we use the median of this largest window as the best possible guess.
                     filtered_data[i] = z_med
                     break
 
+    # Overwrite the original column with the newly filtered data
     df[column_name] = filtered_data
     return df.reset_index(drop=True)
+
 
 def detect_fuel_events(df, config):
     """
@@ -309,32 +324,6 @@ def process_and_display(df, config, filename):
         if processed_df is not None and not processed_df.empty:
             st.subheader("Fuel Level Chart")
             fig = go.Figure()
-            
-            # NEW: Logic to draw colored background rectangles based on motion status
-            stoppage_color = "rgba(211, 211, 211, 0.05)"
-            if config.get('color_motion_status', False):
-                in_stationary_block = False
-                block_start_time = None
-                # Use the raw dataframe for accurate motion status before any filtering
-                for i, row in raw_df.iterrows():
-                    # Start of a new stationary block
-                    if row['Speed'] == 0 and not in_stationary_block:
-                        in_stationary_block = True
-                        block_start_time = row['Dttime_ist']
-                    # End of a stationary block
-                    elif row['Speed'] > 0 and in_stationary_block:
-                        fig.add_vrect(
-                            x0=block_start_time, x1=row['Dttime_ist'],
-                            fillcolor=stoppage_color, layer="below", line_width=0
-                        )
-                        in_stationary_block = False
-                # Handle case where the data ends while still in a stationary block
-                if in_stationary_block:
-                    fig.add_vrect(
-                        x0=block_start_time, x1=raw_df['Dttime_ist'].iloc[-1],
-                        fillcolor=stoppage_color, layer="below", line_width=0
-                    )
-
 
             # Plot the raw (unfiltered) data if the user has checked the box
             if config.get('show_raw_data', False) and raw_df is not None:
@@ -415,16 +404,16 @@ with st.sidebar:
     st.header("1. Upload Files")
     uploaded_files = st.file_uploader("Upload one or more Excel files", type="xlsx", accept_multiple_files=True)
     st.header("2. Configure Parameters")
-    fuel_sensor_column = "An1" #st.selectbox("Fuel Sensor Column", ["An1", "An2", "An3", "An4"], index=0)
+    fuel_sensor_column = st.selectbox("Fuel Sensor Column", ["An1", "An2", "An3", "An4"], index=0)
     
     # --- Filtering Parameters Block (Light Blue) ---
-    st.divider()
+    st.markdown('<div class="filter-params">', unsafe_allow_html=True)
     st.subheader("Filtering Algorithm")
     filtering_algorithm = st.radio(
         "Algorithm",
-        (#'Magnitude Threshold', 
-         'Median Filter', 
-         'Adaptive Median Filter'),
+        (   #'Magnitude Threshold', 
+            'Median Filter', 
+            'Adaptive Median Filter'),
         index=0, label_visibility="collapsed"
     )
     
@@ -445,7 +434,7 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     # --- Event Detection Parameters Block (Gray) ---
-    st.divider()
+    st.markdown('<div class="param-block">', unsafe_allow_html=True)
     st.subheader("Event Detection Tuning")
     min_drain_volume = st.slider("Minimum Drain Volume (Liters)", 0.0, 50.0, 10.0, 0.5)
     min_fill_volume = st.slider("Minimum Filling Volume (Liters)", 0.0, 50.0, 10.0, 0.5)
@@ -457,7 +446,6 @@ with st.sidebar:
     
     st.subheader("Chart Options")
     show_raw_data = st.checkbox("Show Raw Fuel Data on Chart", value=True)
-    color_motion_status = st.checkbox("Highlight Parkings", value=False)
 
 
 # --- Main Application Body ---
@@ -478,8 +466,7 @@ config = {
     "timeout_to_confirm_event": timeout,
     "false_event_threshold": false_event_threshold,
     "detect_events_in_motion": detect_in_motion,
-    "show_raw_data": show_raw_data,
-    "color_motion_status": color_motion_status,
+    "show_raw_data": show_raw_data
 }
 
 # Main logic: Process uploaded files or a default file
