@@ -311,7 +311,7 @@ def process_and_display(df, config, filename):
             fig = go.Figure()
             
             # NEW: Logic to draw colored background rectangles based on motion status
-            stoppage_color = "rgba(211, 211, 211, 0.05)"
+            stoppage_color = "rgba(100, 100, 0, 0.3)"
             if config.get('color_motion_status', False):
                 in_stationary_block = False
                 block_start_time = None
