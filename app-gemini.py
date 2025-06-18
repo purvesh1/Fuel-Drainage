@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import timedelta
 
-from utils import process_and_display
+from utils_2 import process_and_display
 
 # --- Core Logic Functions ---
 
@@ -397,12 +397,66 @@ from utils import process_and_display
 st.set_page_config(layout="wide")
 st.title("Wialon Fuel Logic Analyzer")
 
+# --- Initialize Session State ---
+# This ensures that our calibration parameters persist across reruns.
+if 'calibration_params' not in st.session_state:
+    # Set default parameters initially by performing a regression on the default points.
+    # Default points: (173, 0) and (5062, 375)
+    slope = (375.0 - 0.0) / (5062.0 - 173.0)
+    intercept = 0.0 - slope * 173.0
+    st.session_state.calibration_params = {
+        "slope": slope,
+        "intercept": intercept
+    }
+    
 # --- Sidebar UI Elements ---
 with st.sidebar:
     st.header("1. Upload Files")
-    uploaded_files = st.file_uploader("Upload one or more Excel files", type="xlsx", accept_multiple_files=True)
+    
+    # --- NEW: Calibration File Uploader ---
+    calibration_file = st.file_uploader(
+        "Upload Calibration File (Optional)",
+        type=["xlsx", "csv"],
+        help="Must contain 'Voltage' and 'Fuel' columns. All rows will be used for linear regression."
+    )
+    # Uploader for the main vehicle data file
+    uploaded_files = st.file_uploader("Upload one or more Raw Sensor Data Excel files", type="xlsx", accept_multiple_files=True)
+
+    # --- NEW: Logic to parse the calibration file and perform linear regression ---
+    if calibration_file is not None:
+        try:
+            # Try reading as CSV, then fall back to Excel
+            try:
+                cal_df = pd.read_csv(calibration_file)
+            except Exception:
+                calibration_file.seek(0)
+                cal_df = pd.read_excel(calibration_file)
+
+            # Ensure the required columns exist and there's enough data for regression
+            if 'Voltage' in cal_df.columns and 'Fuel' in cal_df.columns and len(cal_df) >= 2:
+                # Perform linear regression using numpy
+                x = cal_df['Voltage'].astype(float)
+                y = cal_df['Fuel'].astype(float)
+                slope, intercept = np.polyfit(x, y, 1)
+                
+                # Update the session state with the calculated parameters
+                st.session_state.calibration_params['slope'] = slope
+                st.session_state.calibration_params['intercept'] = intercept
+                st.success("Regression complete!")
+            else:
+                st.error("Calibration file must have 'Voltage' and 'Fuel' columns with at least 2 data points.")
+        except Exception as e:
+            st.error(f"Error reading calibration file: {e}")
+
     st.header("2. Configure Parameters")
-    fuel_sensor_column = "An1" #st.selectbox("Fuel Sensor Column", ["An1", "An2", "An3", "An4"], index=0)
+    
+    # --- NEW: Display for active calibration parameters ---
+    # st.subheader("Sensor Calibration")
+    # st.info(f"Using Slope (L/mV): `{st.session_state.calibration_params['slope']:.4f}`\n\n"
+    #         f"Using Intercept (L): `{st.session_state.calibration_params['intercept']:.2f}`")
+
+
+    fuel_sensor_column = "An1" 
     
     # --- Filtering Parameters Block (Light Blue) ---
     st.divider()
@@ -454,7 +508,7 @@ with st.sidebar:
 config = {
     "fuel_sensor_column": fuel_sensor_column,
     "filtering_algorithm": filtering_algorithm,
-    "calibration": {"mv_empty": 173, "liters_empty": 0, "mv_full": 5062, "liters_full": 375},
+    "calibration": st.session_state.calibration_params, # Use the dynamic calibration data from session state
     "filtration_level": filtration_level,
     "median_window_size": median_window_size,
     "adaptive_min_window": adaptive_min_window,

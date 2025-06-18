@@ -9,8 +9,8 @@ from datetime import timedelta
 def convert_mv_to_liters(millivolts, config):
     """
     Converts raw millivolt sensor readings to a fuel volume in Liters.
-    This function uses a linear conversion based on two calibration points:
-    one for an empty tank and one for a full tank.
+    This function now uses a slope and intercept from a linear regression,
+    calculated in the main app and passed via the config.
 
     Args:
         millivolts (float): The raw sensor reading in millivolts.
@@ -19,21 +19,12 @@ def convert_mv_to_liters(millivolts, config):
     Returns:
         float: The calculated fuel level in Liters. Returns 0 if the tank is empty or below.
     """
-    # Retrieve calibration points from the configuration
-    mv_empty = config['calibration']['mv_empty']
-    liters_empty = config['calibration']['liters_empty']
-    mv_full = config['calibration']['mv_full']
-    liters_full = config['calibration']['liters_full']
+    # Retrieve slope and intercept from the configuration
+    slope = config['calibration']['slope']
+    intercept = config['calibration']['intercept']
     
-    # Avoid division by zero if calibration points are identical
-    if (mv_full - mv_empty) == 0:
-        return 0
-    
-    # Calculate the slope of the line (Liters per millivolt)
-    slope = (liters_full - liters_empty) / (mv_full - mv_empty)
-    
-    # Apply the linear formula: y = y1 + m(x - x1)
-    fuel_liters = liters_empty + slope * (millivolts - mv_empty)
+    # Apply the linear formula: y = mx + c
+    fuel_liters = (millivolts * slope) + intercept
     
     # Ensure the calculated fuel level cannot be negative
     return max(0, fuel_liters)
@@ -109,8 +100,7 @@ def apply_median_filter(df, config):
 def apply_adaptive_median_filter(df, config):
     """
     Applies a true adaptive median filter by dynamically adjusting its window size
-    for each data point. This advanced method removes noise while preserving the
-    sharp edges of genuine events like drains and fillings.
+    for each data point to remove noise while preserving signal features.
 
     Args:
         df (pd.DataFrame): The DataFrame with the 'fuel_level_liters' column.
@@ -125,56 +115,42 @@ def apply_adaptive_median_filter(df, config):
     
     st.write(f"Applying True Adaptive Median Filter with min/max windows: {min_window}/{max_window}")
 
-    # Ensure window sizes are odd
     if min_window % 2 == 0: min_window += 1
     if max_window % 2 == 0: max_window += 1
     
-    # Convert data to a NumPy array for efficient processing
     data = df[column_name].to_numpy()
-    
-    # Pad the data at the edges to allow the window to operate on the first and last points
     pad_size = max_window // 2
     padded_data = np.pad(data, (pad_size, pad_size), mode='reflect')
-    
-    # Create a copy to store the final filtered data
     filtered_data = np.copy(data)
 
-    # --- Core Adaptive Filtering Logic ---
-    # Iterate through each original data point
     for i in range(len(data)):
         center_index = i + pad_size
         current_window_size = min_window
-        
-        # Start with the smallest window and expand if necessary
         while current_window_size <= max_window:
             half_window = current_window_size // 2
             window = padded_data[center_index - half_window : center_index + half_window + 1]
-            
             z_min, z_max, z_med = np.min(window), np.max(window), np.median(window)
             
-            # STAGE A: Check if the median itself is a reasonable value (not an outlier)
+            # STAGE A: Check if the median is an outlier itself
             if z_min < z_med < z_max:
-                # STAGE B: The median is good. Now check if the original data point is an outlier.
+                # STAGE B: Median is good, now check the original center point
                 center_point_value = padded_data[center_index]
                 if not (z_min < center_point_value < z_max):
-                    # The original point is an outlier (a spike), so replace it with the window's median.
+                    # Center point is the outlier, replace it with the window's median
                     filtered_data[i] = z_med
-                # If the original point is NOT an outlier, we keep its value to preserve sharp edges.
-                break  # Exit the 'while' loop and move to the next data point
+                # If center point is not an outlier, it keeps its original value from the copy
+                break  # Exit while loop, point is processed
             else:
-                # The median is an outlier (z_min or z_max). This often happens at the start of a
-                # real drain/fill. We expand the window to get a better-stabilized median.
+                # Median is an outlier (e.g., z_min or z_max), so expand the window and retry
                 current_window_size += 2
                 if current_window_size > max_window:
-                    # If we reach the max window and the median is still an outlier,
-                    # we use the median of this largest window as the best possible guess.
+                    # Max window reached, unable to find a non-outlier median.
+                    # As a last resort, keep the median of the largest window.
                     filtered_data[i] = z_med
                     break
 
-    # Overwrite the original column with the newly filtered data
     df[column_name] = filtered_data
     return df.reset_index(drop=True)
-
 
 def detect_fuel_events(df, config):
     """
@@ -202,6 +178,9 @@ def detect_fuel_events(df, config):
         lambda mv: convert_mv_to_liters(mv, config)
     )
     
+    # Handle cases where the fuel level is 0 after conversion
+    df['fuel_level_liters'] = df['fuel_level_liters'].replace(0, np.nan).ffill()
+
     # Store a copy of the raw but calibrated data for later comparison on the chart
     raw_calibrated_df = df.copy()
 
@@ -267,6 +246,7 @@ def detect_fuel_events(df, config):
                     "start_location": {"latitude": prev['Latitude'], "longitude": prev['Longitude']},
                     "was_stationary": is_stationary_long_enough
                 }
+            print(f"Potential event detected: {event_type} at {prev['Dttime_ist']} with volume change: {abs(fuel_change):.2f}L")
         # --- Logic to Confirm or Cancel an EXISTING Potential Event ---
         else:
             start_fuel = potential_event_info['start_fuel_level']
@@ -312,6 +292,7 @@ def process_and_display(df, config, filename):
     try:
         # Run the main detection logic
         events, processed_df, raw_df = detect_fuel_events(df, config)
+        print("EVENTS ------- ",events)  # Debugging output to console
         
         # Display the results table only if events were found
         if events:
@@ -324,6 +305,32 @@ def process_and_display(df, config, filename):
         if processed_df is not None and not processed_df.empty:
             st.subheader("Fuel Level Chart")
             fig = go.Figure()
+            
+            # NEW: Logic to draw colored background rectangles based on motion status
+            stoppage_color = "rgba(100, 100, 0, 0.3)"
+            if config.get('color_motion_status', False):
+                in_stationary_block = False
+                block_start_time = None
+                # Use the raw dataframe for accurate motion status before any filtering
+                for i, row in raw_df.iterrows():
+                    # Start of a new stationary block
+                    if row['Speed'] == 0 and not in_stationary_block:
+                        in_stationary_block = True
+                        block_start_time = row['Dttime_ist']
+                    # End of a stationary block
+                    elif row['Speed'] > 0 and in_stationary_block:
+                        fig.add_vrect(
+                            x0=block_start_time, x1=row['Dttime_ist'],
+                            fillcolor=stoppage_color, layer="below", line_width=0
+                        )
+                        in_stationary_block = False
+                # Handle case where the data ends while still in a stationary block
+                if in_stationary_block:
+                    fig.add_vrect(
+                        x0=block_start_time, x1=raw_df['Dttime_ist'].iloc[-1],
+                        fillcolor=stoppage_color, layer="below", line_width=0
+                    )
+
 
             # Plot the raw (unfiltered) data if the user has checked the box
             if config.get('show_raw_data', False) and raw_df is not None:
@@ -374,115 +381,3 @@ def process_and_display(df, config, filename):
 
     except Exception as e:
         st.error(f"An error occurred while processing {filename}: {e}")
-
-# --- Streamlit UI Definition ---
-# This part of the script defines the user interface (sidebar, sliders, etc.)
-
-st.set_page_config(layout="wide")
-st.title("Wialon Fuel Logic Analyzer")
-
-# Custom CSS for styling the parameter blocks in the sidebar
-st.markdown("""
-<style>
-    .param-block {
-        background-color: #f0f2f6;
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 15px;
-    }
-    .filter-params {
-        background-color: #e8f0fe;
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 15px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- Sidebar UI Elements ---
-with st.sidebar:
-    st.header("1. Upload Files")
-    uploaded_files = st.file_uploader("Upload one or more Excel files", type="xlsx", accept_multiple_files=True)
-    st.header("2. Configure Parameters")
-    fuel_sensor_column = st.selectbox("Fuel Sensor Column", ["An1", "An2", "An3", "An4"], index=0)
-    
-    # --- Filtering Parameters Block (Light Blue) ---
-    st.markdown('<div class="filter-params">', unsafe_allow_html=True)
-    st.subheader("Filtering Algorithm")
-    filtering_algorithm = st.radio(
-        "Algorithm",
-        (   #'Magnitude Threshold', 
-            'Median Filter', 
-            'Adaptive Median Filter'),
-        index=0, label_visibility="collapsed"
-    )
-    
-    # Initialize parameter variables
-    filtration_level = 0
-    median_window_size = 0
-    adaptive_min_window = 0
-    adaptive_max_window = 0
-
-    # Conditionally show the relevant sliders for the chosen algorithm
-    if filtering_algorithm == 'Magnitude Threshold':
-        filtration_level = st.slider("Filtration Level (Liters)", 0.0, 50.0, 5.0, 0.5)
-    elif filtering_algorithm == 'Median Filter':
-        median_window_size = st.slider("Window Size", 3, 101, 15, 2, help="Must be an odd number.")
-    elif filtering_algorithm == 'Adaptive Median Filter':
-        adaptive_min_window = st.slider("Min Window Size", 3, 21, 3, 2)
-        adaptive_max_window = st.slider("Max Window Size", 5, 101, 11, 2)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # --- Event Detection Parameters Block (Gray) ---
-    st.markdown('<div class="param-block">', unsafe_allow_html=True)
-    st.subheader("Event Detection Tuning")
-    min_drain_volume = st.slider("Minimum Drain Volume (Liters)", 0.0, 50.0, 10.0, 0.5)
-    min_fill_volume = st.slider("Minimum Filling Volume (Liters)", 0.0, 50.0, 10.0, 0.5)
-    min_stay_time = st.slider("Min Stationary Time (seconds)", 0, 600, 300)
-    timeout = st.slider("Confirmation Timeout (seconds)", 0, 600, 180)
-    false_event_threshold = st.slider("False Event Threshold (Liters)", 0.0, 10.0, 2.0, 0.5, help="Threshold to cancel a potential event if fuel level returns to normal.")
-    detect_in_motion = st.checkbox("Detect Events in Motion", value=False)
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    st.subheader("Chart Options")
-    show_raw_data = st.checkbox("Show Raw Fuel Data on Chart", value=True)
-
-
-# --- Main Application Body ---
-# This part runs the analysis based on the UI settings.
-
-# Gather all configurations into a single dictionary to pass to functions
-config = {
-    "fuel_sensor_column": fuel_sensor_column,
-    "filtering_algorithm": filtering_algorithm,
-    "calibration": {"mv_empty": 173, "liters_empty": 0, "mv_full": 5062, "liters_full": 375},
-    "filtration_level": filtration_level,
-    "median_window_size": median_window_size,
-    "adaptive_min_window": adaptive_min_window,
-    "adaptive_max_window": adaptive_max_window,
-    "min_drain_volume": min_drain_volume,
-    "min_fill_volume": min_fill_volume,
-    "min_stay_time_before_event": min_stay_time,
-    "timeout_to_confirm_event": timeout,
-    "false_event_threshold": false_event_threshold,
-    "detect_events_in_motion": detect_in_motion,
-    "show_raw_data": show_raw_data
-}
-
-# Main logic: Process uploaded files or a default file
-if uploaded_files:
-    # If files are uploaded, loop through each one
-    for uploaded_file in uploaded_files:
-        df = pd.read_excel(uploaded_file)
-        process_and_display(df, config, uploaded_file.name)
-else:
-    # If no files are uploaded, try to use a local default file
-    try:
-        st.info("No files uploaded. Attempting to load default file 'table.xlsx'...")
-        default_df = pd.read_excel("table.xlsx")
-        process_and_display(default_df, config, "table.xlsx")
-    except FileNotFoundError:
-        st.warning("Default file 'table.xlsx' not found.")
-        st.info("Please upload Excel files using the sidebar to begin analysis.")
-    except Exception as e:
-        st.error(f"An error occurred while loading the default file: {e}")
