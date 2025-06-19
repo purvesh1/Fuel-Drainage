@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import timedelta
 
-from utils_2 import process_and_display
+from utils_filling_interval import process_and_display
 
 # --- Streamlit UI Definition ---
 st.set_page_config(layout="wide")
@@ -26,12 +26,7 @@ if 'calibration_params' not in st.session_state:
 with st.sidebar:
     st.header("1. Upload Files")
     
-    # Uploader for the main vehicle data file
-    uploaded_data_file = st.file_uploader(
-        "Upload Vehicle Data File", 
-        type=["xlsx", "csv"]
-    )
-    
+        
     # --- NEW: Calibration File Uploader ---
     calibration_file = st.file_uploader(
         "Upload Calibration File (Optional)",
@@ -59,11 +54,14 @@ with st.sidebar:
                 # Update the session state with the calculated parameters
                 st.session_state.calibration_params['slope'] = slope
                 st.session_state.calibration_params['intercept'] = intercept
-                st.success("Regression complete!")
+                st.success("Calibration complete!")
             else:
                 st.error("Calibration file must have 'Voltage' and 'Fuel' columns with at least 2 data points.")
         except Exception as e:
             st.error(f"Error reading calibration file: {e}")
+
+    # Uploader for the main vehicle data file
+    uploaded_files = st.file_uploader("Upload one or more Raw Sensor Data Excel files", type="xlsx", accept_multiple_files=True)
 
     st.header("2. Configure Parameters")
     
@@ -79,7 +77,10 @@ with st.sidebar:
     st.subheader("Filtering Algorithm")
     filtering_algorithm = st.radio(
         "Algorithm",
-        ('Magnitude Threshold', 'Median Filter', 'Adaptive Median Filter'),
+        (
+            #'Magnitude Threshold', 
+            'Median Filter', 
+            'Adaptive Median Filter'),
         index=0, label_visibility="collapsed"
     )
     
@@ -132,20 +133,20 @@ config = {
     "color_motion_status": color_motion_status,
 }
 
-# Main logic: Process uploaded file or a default file
-if uploaded_data_file:
-    try:
-        # Try reading as CSV first for wider compatibility
-        df = pd.read_csv(uploaded_data_file)
-        process_and_display(df, config, uploaded_data_file.name)
-    except Exception as e:
-        st.warning(f"Could not read as CSV. Attempting Excel... Error: {e}")
-        try:
-            # Fallback to reading as Excel
-            uploaded_data_file.seek(0) # Reset file pointer
-            df = pd.read_excel(uploaded_data_file)
-            process_and_display(df, config, uploaded_data_file.name)
-        except Exception as e2:
-            st.error(f"Failed to read as Excel. Please check file format. Error: {e2}")
+# Main logic: Process uploaded files or a default file
+if uploaded_files:
+    # If files are uploaded, loop through each one
+    for uploaded_file in uploaded_files:
+        df = pd.read_excel(uploaded_file)
+        process_and_display(df, config, uploaded_file.name)
 else:
-    st.info("Please upload a Vehicle Data file to begin analysis.")
+    # If no files are uploaded, try to use a local default file
+    try:
+        st.info("No files uploaded. Attempting to load default file 'table.xlsx'...")
+        default_df = pd.read_excel("table.xlsx")
+        process_and_display(default_df, config, "table.xlsx")
+    except FileNotFoundError:
+        st.warning("Default file 'table.xlsx' not found.")
+        st.info("Please upload Excel files using the sidebar to begin analysis.")
+    except Exception as e:
+        st.error(f"An error occurred while loading the default file: {e}")
