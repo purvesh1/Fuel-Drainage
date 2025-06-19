@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import timedelta
 
-from utils_filling_interval import process_and_display
+from utils_2 import process_and_display
 
 # --- Streamlit UI Definition ---
 st.set_page_config(layout="wide")
@@ -21,18 +21,19 @@ if 'calibration_params' not in st.session_state:
         "slope": slope,
         "intercept": intercept
     }
-
+    
 # --- Sidebar UI Elements ---
 with st.sidebar:
     st.header("1. Upload Files")
     
-        
     # --- NEW: Calibration File Uploader ---
     calibration_file = st.file_uploader(
-        "Upload Calibration File (Optional)",
+        "Upload Calibration File",
         type=["xlsx", "csv"],
         help="Must contain 'Voltage' and 'Fuel' columns. All rows will be used for linear regression."
     )
+    # Uploader for the main vehicle data file
+    uploaded_files = st.file_uploader("Upload one or more Raw Sensor Data Excel files", type="xlsx", accept_multiple_files=True)
 
     # --- NEW: Logic to parse the calibration file and perform linear regression ---
     if calibration_file is not None:
@@ -54,41 +55,40 @@ with st.sidebar:
                 # Update the session state with the calculated parameters
                 st.session_state.calibration_params['slope'] = slope
                 st.session_state.calibration_params['intercept'] = intercept
-                st.success("Calibration complete!")
+                st.success("Regression complete!")
             else:
                 st.error("Calibration file must have 'Voltage' and 'Fuel' columns with at least 2 data points.")
         except Exception as e:
             st.error(f"Error reading calibration file: {e}")
 
-    # Uploader for the main vehicle data file
-    uploaded_files = st.file_uploader("Upload one or more Raw Sensor Data Excel files", type="xlsx", accept_multiple_files=True)
-
     st.header("2. Configure Parameters")
     
     # --- NEW: Display for active calibration parameters ---
-    st.subheader("Sensor Calibration")
-    st.info(f"Using Slope (L/mV): `{st.session_state.calibration_params['slope']:.4f}`\n\n"
-            f"Using Intercept (L): `{st.session_state.calibration_params['intercept']:.2f}`")
+    # st.subheader("Sensor Calibration")
+    # st.info(f"Using Slope (L/mV): `{st.session_state.calibration_params['slope']:.4f}`\n\n"
+    #         f"Using Intercept (L): `{st.session_state.calibration_params['intercept']:.2f}`")
 
 
     fuel_sensor_column = "An1" 
     
+    # --- Filtering Parameters Block (Light Blue) ---
     st.divider()
     st.subheader("Filtering Algorithm")
     filtering_algorithm = st.radio(
         "Algorithm",
-        (
-            #'Magnitude Threshold', 
-            'Median Filter', 
-            'Adaptive Median Filter'),
+        (#'Magnitude Threshold', 
+         'Median Filter', 
+         'Adaptive Median Filter'),
         index=0, label_visibility="collapsed"
     )
     
+    # Initialize parameter variables
     filtration_level = 0
     median_window_size = 0
     adaptive_min_window = 0
     adaptive_max_window = 0
 
+    # Conditionally show the relevant sliders for the chosen algorithm
     if filtering_algorithm == 'Magnitude Threshold':
         filtration_level = st.slider("Filtration Level (Liters)", 0.0, 50.0, 5.0, 0.5)
     elif filtering_algorithm == 'Median Filter':
@@ -96,16 +96,19 @@ with st.sidebar:
     elif filtering_algorithm == 'Adaptive Median Filter':
         adaptive_min_window = st.slider("Min Window Size", 3, 21, 3, 2)
         adaptive_max_window = st.slider("Max Window Size", 5, 101, 11, 2)
-    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # --- Event Detection Parameters Block (Gray) ---
     st.divider()
     st.subheader("Event Detection Tuning")
     min_drain_volume = st.slider("Minimum Drain Volume (Liters)", 0.0, 50.0, 10.0, 0.5)
     min_fill_volume = st.slider("Minimum Filling Volume (Liters)", 0.0, 50.0, 10.0, 0.5)
     min_stay_time = st.slider("Min Stationary Time (seconds)", 0, 600, 100)
     timeout = st.slider("Confirmation Timeout (seconds)", 0, 600, 180)
-    false_event_threshold = st.slider("False Event Threshold (Liters)", 0.0, 10.0, 2.0, 0.5)
-    ignore_time_before_filling = st.slider("Ignore Dips Before Filling (sec)", 0, 600, 300, 60)
+    false_event_threshold = st.slider("False Event Threshold (Liters)", 0.0, 10.0, 2.0, 0.5, help="Threshold to cancel a potential event if fuel level returns to normal.")
+    ignore_time_before_filling = st.slider("Ignore Dips Before Filling (sec)", 0, 600, 300, 60, help="Ignore potential drains that occur within this time before a confirmed filling.")
     detect_in_motion = st.checkbox("Detect Events in Motion", value=False)
+    st.markdown('</div>', unsafe_allow_html=True)
     
     st.subheader("Chart Options")
     show_raw_data = st.checkbox("Show Raw Fuel Data on Chart", value=True)
@@ -113,6 +116,8 @@ with st.sidebar:
 
 
 # --- Main Application Body ---
+# This part runs the analysis based on the UI settings.
+
 # Gather all configurations into a single dictionary to pass to functions
 config = {
     "fuel_sensor_column": fuel_sensor_column,
